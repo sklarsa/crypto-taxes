@@ -3,14 +3,16 @@ package main
 import (
 	"bufio"
 	"encoding/csv"
+	"flag"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
+	log "github.com/sirupsen/logrus"
 )
 
 type Action int
@@ -29,19 +31,72 @@ var TransactionTypeToAction = map[string]Action{
 	"Coinbase Earn":     BUY,
 }
 
+func usage() {
+	fmt.Printf("Usage: %s [OPTIONS] filename.csv\n", os.Args[0])
+	flag.PrintDefaults()
+}
+
 func main() {
-	transactions := ReadStandardFile("tmp-data/TransactionsHistoryReport-2021-02-20-19_51_13.csv")
+	badTransactions := make(chan *Transaction)
+	sales := make(chan *Sale)
+
+	flag.Usage = usage
+
+	var verbose bool
+	flag.BoolVar(&verbose, "v", false, "Turns on debug logging")
+
+	var avgCost bool
+	flag.BoolVar(&avgCost, "avg", false, "Average cost basis (FIFO is default)")
+
+	flag.Parse()
+
+	if flag.NArg() != 1 {
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	if verbose {
+		log.SetLevel(log.DebugLevel)
+	}
+	filename := flag.Arg(0)
+
+	transactions := ReadStandardFile(filename)
 	sort.Slice(transactions, func(i, j int) bool {
 		return transactions[i].Timestamp.Unix() < transactions[j].Timestamp.Unix()
 	})
 	account := NewAccount()
 
-	for _, t := range transactions {
-		sale := account.processTransaction(t)
-		if sale != nil {
-			fmt.Printf("%s Sold %s %s -- Proceeds: $%s, Cost: $%s, P&L: $%s\n", t.Timestamp, t.Quantity, t.Asset, sale.Proceeds, sale.Cost, sale.Proceeds.Sub(sale.Cost))
+	go func() {
+		for _, t := range transactions {
+			sale, err := account.processTransaction(t)
+			if err != nil {
+				badTransactions <- t
+				continue
+			}
+
+			if sale != nil {
+				log.Debugf("%s Sold %s %s -- Proceeds: $%s, AvgCost: $%s, Avg P&L: $%s, FifoCost: $%s, Fifo P&L: $%s\n", t.Timestamp, t.Quantity, t.Asset, sale.Proceeds, sale.AvgCost, sale.Proceeds.Sub(sale.AvgCost), sale.FifoCost, sale.Proceeds.Sub(sale.FifoCost))
+				sales <- sale
+			}
 		}
+		close(sales)
+		close(badTransactions)
+	}()
+
+	for s := range sales {
+		cost := s.FifoCost
+		if avgCost {
+			cost = s.AvgCost
+		}
+		fmt.Printf("%s: Sold %s of %s with P&L of $%s\n", s.Timestamp.Format("2006-01-02"), s.Quantity, s.Asset, s.Proceeds.Sub(cost))
 	}
+
+	for t := range badTransactions {
+		fmt.Printf("%s\n", t)
+	}
+
+	fmt.Println(account.Report())
+
 }
 
 type Transaction struct {
@@ -77,13 +132,13 @@ func (h *LotHistory) append(l *Lot) {
 	h.Lots = append(h.Lots, l)
 }
 
-func (h *LotHistory) pop() *Lot {
+func (h *LotHistory) pop() (*Lot, error) {
 	if len(h.Lots) == 0 {
-		log.Fatal("LotHistory.Lots len is 0.  Cannot pop element off empty slice.")
+		return nil, fmt.Errorf("%s len is 0, cannot pop element off empty slice", h)
 	}
 	lot := h.Lots[0]
 	h.Lots = h.Lots[1:]
-	return lot
+	return lot, nil
 }
 
 func (h *LotHistory) peek() *Lot {
@@ -94,13 +149,13 @@ func (h *LotHistory) peek() *Lot {
 	return h.Lots[0]
 }
 
-func (h *LotHistory) sell(quantity decimal.Decimal) decimal.Decimal {
+func (h *LotHistory) sell(quantity decimal.Decimal) (decimal.Decimal, error) {
 	totalCost := decimal.Zero
 	remaining := quantity
 	for ok := true; ok; ok = remaining.GreaterThan(decimal.Zero) {
 		lot := h.peek()
 		if lot == nil {
-			log.Fatalf("No more lots available. Sold more shares than bought. %s shares remaining", remaining)
+			return decimal.Zero, fmt.Errorf("No more lots available. Sold more shares than bought. %s shares remaining", remaining)
 		}
 
 		switch remaining.Cmp(lot.Quantity) {
@@ -109,13 +164,16 @@ func (h *LotHistory) sell(quantity decimal.Decimal) decimal.Decimal {
 			lot.Quantity = lot.Quantity.Sub(remaining)
 			remaining = decimal.Zero
 		default:
-			lot = h.pop()
+			lot, err := h.pop()
+			if err != nil {
+				return decimal.Zero, err
+			}
 			totalCost = totalCost.Add(lot.TotalCost())
 			remaining = remaining.Sub((lot.TotalCost()))
 		}
 
 	}
-	return totalCost
+	return totalCost, nil
 }
 
 type AssetHolding struct {
@@ -158,8 +216,12 @@ func (h *AssetHolding) AvgCost() decimal.Decimal {
 }
 
 type Sale struct {
-	Cost     decimal.Decimal
-	Proceeds decimal.Decimal
+	Asset     string
+	Timestamp time.Time
+	Quantity  decimal.Decimal
+	AvgCost   decimal.Decimal
+	FifoCost  decimal.Decimal
+	Proceeds  decimal.Decimal
 }
 
 type Account struct {
@@ -172,7 +234,7 @@ func NewAccount() *Account {
 	}
 }
 
-func (a *Account) processTransaction(t *Transaction) *Sale {
+func (a *Account) processTransaction(t *Transaction) (*Sale, error) {
 	var sale *Sale
 	asset := t.Asset
 	holding, ok := a.Holdings[asset]
@@ -187,13 +249,22 @@ func (a *Account) processTransaction(t *Transaction) *Sale {
 		holding.LotHistory.append(lot)
 
 	case SELL:
-		cost := holding.LotHistory.sell(t.Quantity)
+		avgCost := holding.AvgCost()
+		cost, err := holding.LotHistory.sell(t.Quantity)
+		if err != nil {
+			return nil, err
+		}
+
 		sale = &Sale{
-			Cost:     cost,
-			Proceeds: t.Quantity.Mul(t.Spot),
+			Asset:     t.Asset,
+			AvgCost:   avgCost,
+			FifoCost:  cost,
+			Proceeds:  t.Quantity.Mul(t.Spot),
+			Quantity:  t.Quantity,
+			Timestamp: t.Timestamp,
 		}
 	}
-	return sale
+	return sale, nil
 }
 
 type TransactionHistory struct {
@@ -234,15 +305,13 @@ func ReadStandardFile(filename string) []*Transaction {
 			log.Fatal(err)
 		}
 
-		fmt.Println(record)
+		log.Debug(record)
 		if headerRecordFound {
 
 			time, err := time.Parse("2006-01-02T15:04:05Z", record[0])
 			if err != nil {
-				log.Fatalf("Invalid time %s", record[0])
+				log.Panicf("Invalid time %s", record[0])
 			}
-
-			// todo: Action
 
 			transaction := &Transaction{
 				Timestamp: time,
@@ -261,4 +330,13 @@ func ReadStandardFile(filename string) []*Transaction {
 	}
 
 	return transactions
+}
+
+func (a *Account) Report() string {
+	report := "Account Summary"
+	report += "\n" + strings.Repeat("-", len(report)) + "\n"
+	for asset, holding := range a.Holdings {
+		report += fmt.Sprintf("%s: %s\n", asset, holding.Quantity())
+	}
+	return report
 }
