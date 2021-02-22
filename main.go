@@ -71,18 +71,12 @@ func main() {
 		defer close(badTransactions)
 
 		for _, t := range transactions {
-			sale, err := account.processTransaction(t)
+			err := account.processTransaction(t, sales)
 			if err != nil {
 				badTransactions <- t
 				continue
 			}
-
-			if sale != nil {
-				log.Debugf("%s Sold %s %s -- Proceeds: $%s, AvgCost: $%s, Avg P&L: $%s, FifoCost: $%s, Fifo P&L: $%s\n", t.Timestamp, t.Quantity, t.Asset, sale.Proceeds, sale.AvgCost, sale.Proceeds.Sub(sale.AvgCost), sale.FifoCost, sale.Proceeds.Sub(sale.FifoCost))
-				sales <- sale
-			}
 		}
-
 	}()
 
 	go func() {
@@ -96,7 +90,7 @@ func main() {
 		if avgCost {
 			cost = s.AvgCost
 		}
-		fmt.Printf("%s: Sold %s of %s with P&L of $%s\n", s.Timestamp.Format("2006-01-02"), s.Quantity, s.Asset, s.Proceeds.Sub(cost))
+		fmt.Printf("%s: Sold %s of %s with P&L of $%s, Purchase date %s\n", s.SaleDate.Format("2006-01-02"), s.Quantity, s.Asset, s.Proceeds.Sub(cost), s.PurchaseDate.Format("2006-01-02"))
 	}
 
 	fmt.Println("\n" + account.Report())
@@ -114,14 +108,16 @@ type Transaction struct {
 
 func (t Transaction) ToLot() *Lot {
 	return &Lot{
-		Quantity: t.Quantity,
-		Spot:     t.Spot,
+		PurchaseDate: t.Timestamp,
+		Quantity:     t.Quantity,
+		Spot:         t.Spot,
 	}
 }
 
 type Lot struct {
-	Quantity decimal.Decimal
-	Spot     decimal.Decimal
+	PurchaseDate time.Time
+	Quantity     decimal.Decimal
+	Spot         decimal.Decimal
 }
 
 func (l Lot) TotalCost() decimal.Decimal {
@@ -153,125 +149,122 @@ func (h *LotHistory) peek() *Lot {
 	return h.Lots[0]
 }
 
-func (h *LotHistory) sell(quantity decimal.Decimal) (decimal.Decimal, error) {
-	totalCost := decimal.Zero
-	remaining := quantity
+func (h *LotHistory) sell(t *Transaction, sales chan<- *Sale) error {
+	var cost decimal.Decimal
+	remaining := t.Quantity
 	for ok := true; ok; ok = remaining.GreaterThan(decimal.Zero) {
 		lot := h.peek()
 		if lot == nil {
-			return decimal.Zero, fmt.Errorf("No more lots available. Sold more shares than bought. %s shares remaining", remaining)
+			return fmt.Errorf("No more lots available. Sold more shares than bought. %s shares remaining", remaining)
 		}
-
+		avgCost := h.AvgCost()
 		switch remaining.Cmp(lot.Quantity) {
 		case -1:
-			totalCost = totalCost.Add(remaining.Mul(lot.Spot))
+			avgCost = avgCost.Mul(remaining)
+			cost = remaining.Mul(lot.Spot)
 			lot.Quantity = lot.Quantity.Sub(remaining)
 			remaining = decimal.Zero
 		default:
 			lot, err := h.pop()
 			if err != nil {
-				return decimal.Zero, err
+				return err
 			}
-			totalCost = totalCost.Add(lot.TotalCost())
-			remaining = remaining.Sub((lot.TotalCost()))
+			cost = lot.TotalCost()
+			avgCost = lot.Quantity.Mul(avgCost)
+			remaining = remaining.Sub(lot.TotalCost())
 		}
 
+		sale := &Sale{
+			Asset:        t.Asset,
+			AvgCost:      avgCost,
+			FifoCost:     cost,
+			Proceeds:     t.Quantity.Mul(t.Spot),
+			Quantity:     t.Quantity,
+			SaleDate:     t.Timestamp,
+			PurchaseDate: lot.PurchaseDate,
+		}
+		sales <- sale
+
 	}
-	return totalCost, nil
+	return nil
 }
 
-type AssetHolding struct {
-	LotHistory LotHistory
-}
-
-func NewAssetHolding() *AssetHolding {
-	lotHistory := &LotHistory{
+func NewLotHistory() *LotHistory {
+	return &LotHistory{
 		Lots: make([]*Lot, 0),
 	}
-	return &AssetHolding{
-		LotHistory: *lotHistory,
-	}
 }
 
-func (h *AssetHolding) Quantity() decimal.Decimal {
+func (h *LotHistory) Quantity() decimal.Decimal {
 	quantity := decimal.Zero
-	for _, l := range h.LotHistory.Lots {
+	for _, l := range h.Lots {
 		quantity = quantity.Add(l.Quantity)
 	}
 	return quantity
 }
 
-func (h *AssetHolding) TotalCost() decimal.Decimal {
+func (h *LotHistory) TotalCost() decimal.Decimal {
 	totalCost := decimal.Zero
-	for _, l := range h.LotHistory.Lots {
+	for _, l := range h.Lots {
 		totalCost = totalCost.Add(l.Spot)
 	}
 	return totalCost
 }
 
-func (h *AssetHolding) AvgCost() decimal.Decimal {
-	totalCost := decimal.Zero
-	quantity := decimal.Zero
-	for _, l := range h.LotHistory.Lots {
-		totalCost = totalCost.Add(l.Spot)
-		quantity = quantity.Add(l.Quantity)
+func (h *LotHistory) AvgCost() decimal.Decimal {
+	num := decimal.Zero
+	denom := decimal.Zero
+	for _, l := range h.Lots {
+		num = num.Add(l.Spot.Mul(l.Quantity))
+		denom = denom.Add(l.Quantity)
 	}
-	if quantity == decimal.Zero {
+	if denom == decimal.Zero {
 		return decimal.Zero
 	}
-	return totalCost.Div(quantity)
+	return num.Div(denom)
 }
 
 type Sale struct {
-	Asset     string
-	Timestamp time.Time
-	Quantity  decimal.Decimal
-	AvgCost   decimal.Decimal
-	FifoCost  decimal.Decimal
-	Proceeds  decimal.Decimal
+	Asset        string
+	SaleDate     time.Time
+	PurchaseDate time.Time
+	Quantity     decimal.Decimal
+	AvgCost      decimal.Decimal
+	FifoCost     decimal.Decimal
+	Proceeds     decimal.Decimal
 }
 
 type Account struct {
-	Holdings map[string]*AssetHolding
+	Holdings map[string]*LotHistory
 }
 
 func NewAccount() *Account {
 	return &Account{
-		Holdings: make(map[string]*AssetHolding),
+		Holdings: make(map[string]*LotHistory),
 	}
 }
 
-func (a *Account) processTransaction(t *Transaction) (*Sale, error) {
-	var sale *Sale
+func (a *Account) processTransaction(t *Transaction, sales chan<- *Sale) error {
+
 	asset := t.Asset
 	holding, ok := a.Holdings[asset]
 	if !ok {
-		holding = NewAssetHolding()
+		holding = NewLotHistory()
 		a.Holdings[asset] = holding
 	}
 
 	switch t.Action {
 	case BUY:
 		lot := t.ToLot()
-		holding.LotHistory.append(lot)
+		holding.append(lot)
 
 	case SELL:
-		avgCost := holding.AvgCost()
-		cost, err := holding.LotHistory.sell(t.Quantity)
+		err := holding.sell(t, sales)
 		if err != nil {
-			return nil, err
-		}
-
-		sale = &Sale{
-			Asset:     t.Asset,
-			AvgCost:   avgCost,
-			FifoCost:  cost,
-			Proceeds:  t.Quantity.Mul(t.Spot),
-			Quantity:  t.Quantity,
-			Timestamp: t.Timestamp,
+			return err
 		}
 	}
-	return sale, nil
+	return nil
 }
 
 type TransactionHistory struct {
