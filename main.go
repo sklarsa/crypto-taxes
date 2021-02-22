@@ -136,7 +136,8 @@ func (l Lot) TotalCost() decimal.Decimal {
 // LotHistory is a queue data structure that is used to account for all lots
 // of a specific crypto asset.
 type LotHistory struct {
-	Lots []*Lot
+	Asset string
+	Lots  []*Lot
 }
 
 // Buy adds a lot to the lot record
@@ -146,7 +147,7 @@ func (h *LotHistory) Buy(l *Lot) {
 
 func (h *LotHistory) pop() (*Lot, error) {
 	if len(h.Lots) == 0 {
-		return nil, fmt.Errorf("%s len is 0, cannot pop element off empty slice", h)
+		return nil, fmt.Errorf("%s len is 0, cannot pop element off empty slice", h.Asset)
 	}
 	lot := h.Lots[0]
 	h.Lots = h.Lots[1:]
@@ -201,13 +202,6 @@ func (h *LotHistory) Sell(t *Transaction, sales chan<- *Sale) error {
 
 	}
 	return nil
-}
-
-// NewLotHistory initializes a LotHistory struct
-func NewLotHistory() *LotHistory {
-	return &LotHistory{
-		Lots: make([]*Lot, 0),
-	}
 }
 
 // Quantity returns the total number of shares in the LotHistory
@@ -272,7 +266,10 @@ func (a *Account) ProcessTransaction(t *Transaction, sales chan<- *Sale) error {
 	asset := t.Asset
 	holding, ok := a.Holdings[asset]
 	if !ok {
-		holding = NewLotHistory()
+		holding = &LotHistory{
+			Asset: t.Asset,
+			Lots:  make([]*Lot, 0),
+		}
 		a.Holdings[asset] = holding
 	}
 
