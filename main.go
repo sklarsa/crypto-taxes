@@ -67,6 +67,9 @@ func main() {
 	account := NewAccount()
 
 	go func() {
+		defer close(sales)
+		defer close(badTransactions)
+
 		for _, t := range transactions {
 			sale, err := account.processTransaction(t)
 			if err != nil {
@@ -79,8 +82,13 @@ func main() {
 				sales <- sale
 			}
 		}
-		close(sales)
-		close(badTransactions)
+
+	}()
+
+	go func() {
+		for t := range badTransactions {
+			fmt.Printf("Error processing %s sale of %s %s\n", t.Timestamp.Format("2006-01-02"), t.Quantity, t.Asset)
+		}
 	}()
 
 	for s := range sales {
@@ -91,11 +99,7 @@ func main() {
 		fmt.Printf("%s: Sold %s of %s with P&L of $%s\n", s.Timestamp.Format("2006-01-02"), s.Quantity, s.Asset, s.Proceeds.Sub(cost))
 	}
 
-	for t := range badTransactions {
-		fmt.Printf("%s\n", t)
-	}
-
-	fmt.Println(account.Report())
+	fmt.Println("\n" + account.Report())
 
 }
 
@@ -211,6 +215,9 @@ func (h *AssetHolding) AvgCost() decimal.Decimal {
 	for _, l := range h.LotHistory.Lots {
 		totalCost = totalCost.Add(l.Spot)
 		quantity = quantity.Add(l.Quantity)
+	}
+	if quantity == decimal.Zero {
+		return decimal.Zero
 	}
 	return totalCost.Div(quantity)
 }
@@ -333,8 +340,9 @@ func ReadStandardFile(filename string) []*Transaction {
 }
 
 func (a *Account) Report() string {
-	report := "Account Summary"
-	report += "\n" + strings.Repeat("-", len(report)) + "\n"
+	header := "Account Summary"
+	report := strings.Repeat("-", len(header)) + "\n"
+	report += header + "\n" + strings.Repeat("-", len(header)) + "\n"
 	for asset, holding := range a.Holdings {
 		report += fmt.Sprintf("%s: %s\n", asset, holding.Quantity())
 	}
