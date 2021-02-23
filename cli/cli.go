@@ -80,7 +80,7 @@ func main() {
 		if avgCost {
 			cost = s.AvgCost
 		}
-		fmt.Printf("%s: Sold %s of %s with P&L of $%s purchased on %s\n", s.SaleDate.Format("2006-01-02"), s.Quantity, s.Asset, s.Proceeds.Sub(cost), s.PurchaseDate.Format("2006-01-02"))
+		fmt.Printf("%s: Sold %s of %s with P&L of $%s purchased on %s\n", s.SaleDate.Format("2006-01-02"), s.Quantity, s.Asset, s.Proceeds.Sub(cost).Round(2), s.PurchaseDate.Format("2006-01-02"))
 	}
 
 	fmt.Println("\n" + account.Report())

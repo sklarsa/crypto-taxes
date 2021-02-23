@@ -8,6 +8,20 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// NegativeQuantityErr is an error for a transaction with a negative quantity
+type NegativeQuantityErr struct{}
+
+func (m *NegativeQuantityErr) Error() string {
+	return "Quantity must be > 0"
+}
+
+// NegativeSpotErr is an error for a transaction with a negative spot price
+type NegativeSpotErr struct{}
+
+func (m *NegativeSpotErr) Error() string {
+	return "Spot price must be > 0"
+}
+
 // Action is either a buy or sale of a crypto
 type Action int
 
@@ -68,8 +82,24 @@ type LotHistory struct {
 }
 
 // Buy adds a lot to the lot record
-func (h *LotHistory) Buy(l *Lot) {
+func (h *LotHistory) Buy(l *Lot) error {
+	if l.Quantity.LessThanOrEqual(decimal.Zero) {
+		return &NegativeQuantityErr{}
+	}
+
+	if l.Spot.LessThanOrEqual(decimal.Zero) {
+		return &NegativeSpotErr{}
+	}
+
+	if len(h.Lots) > 0 {
+		if l.PurchaseDate.Before(h.tail().PurchaseDate) {
+			return fmt.Errorf("Transactions must be in chronological order.  BUY on %s is prior to most recent BUY dated %s", l.PurchaseDate, h.tail().PurchaseDate)
+		}
+	}
+
 	h.Lots = append(h.Lots, l)
+
+	return nil
 }
 
 func (h *LotHistory) pop() (*Lot, error) {
@@ -100,6 +130,15 @@ func (h *LotHistory) tail() *Lot {
 // Sell processes a transaction against this LotHistory, adding any
 // resulting Sale events to the sales channel
 func (h *LotHistory) Sell(quantity decimal.Decimal, spot decimal.Decimal, date time.Time, sales chan<- *Sale) error {
+
+	if quantity.LessThanOrEqual(decimal.Zero) {
+		return &NegativeQuantityErr{}
+	}
+
+	if spot.LessThanOrEqual(decimal.Zero) {
+		return &NegativeSpotErr{}
+	}
+
 	var cost decimal.Decimal
 	remaining := quantity
 	for ok := true; ok; ok = remaining.GreaterThan(decimal.Zero) {
@@ -211,7 +250,10 @@ func (a *Account) ProcessTransaction(t *Transaction, sales chan<- *Sale) error {
 	switch t.Action {
 	case BUY:
 		lot := t.ToLot()
-		holding.Buy(lot)
+		err := holding.Buy(lot)
+		if err != nil {
+			return err
+		}
 
 	case SELL:
 		err := holding.Sell(t.Quantity, t.Spot, t.Timestamp, sales)

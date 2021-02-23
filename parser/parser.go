@@ -23,6 +23,7 @@ func ReadStandardFile(filename string) []*a.Transaction {
 	}
 	defer file.Close()
 
+	// Skip the first 7 lines before parsing the csv data
 	skipper := bufio.NewReader(file)
 	newlineCt := 0
 	for ok := true; ok; ok = newlineCt < 7 {
