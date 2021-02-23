@@ -1,18 +1,11 @@
-package main
+package accounting
 
 import (
-	"bufio"
-	"encoding/csv"
-	"flag"
 	"fmt"
-	"io"
-	"os"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
-	log "github.com/sirupsen/logrus"
 )
 
 // Action is either a buy or sale of a crypto
@@ -33,72 +26,6 @@ var TransactionTypeToAction = map[string]Action{
 	"Send":              SELL,
 	"Convert":           SELL,
 	"Coinbase Earn":     BUY,
-}
-
-func usage() {
-	fmt.Printf("Usage: %s [OPTIONS] filename.csv\n", os.Args[0])
-	flag.PrintDefaults()
-}
-
-func main() {
-	badTransactions := make(chan *Transaction)
-	sales := make(chan *Sale)
-
-	flag.Usage = usage
-
-	var verbose bool
-	flag.BoolVar(&verbose, "v", false, "Turns on debug logging")
-
-	var avgCost bool
-	flag.BoolVar(&avgCost, "avg", false, "Average cost basis (FIFO is default)")
-
-	flag.Parse()
-
-	if flag.NArg() != 1 {
-		flag.Usage()
-		os.Exit(1)
-	}
-
-	if verbose {
-		log.SetLevel(log.DebugLevel)
-	}
-	filename := flag.Arg(0)
-
-	transactions := ReadStandardFile(filename)
-	sort.Slice(transactions, func(i, j int) bool {
-		return transactions[i].Timestamp.Unix() < transactions[j].Timestamp.Unix()
-	})
-	account := NewAccount()
-
-	go func() {
-		defer close(sales)
-		defer close(badTransactions)
-
-		for _, t := range transactions {
-			err := account.ProcessTransaction(t, sales)
-			if err != nil {
-				badTransactions <- t
-				continue
-			}
-		}
-	}()
-
-	go func() {
-		for t := range badTransactions {
-			fmt.Printf("Error processing %s sale of %s %s\n", t.Timestamp.Format("2006-01-02"), t.Quantity, t.Asset)
-		}
-	}()
-
-	for s := range sales {
-		cost := s.FifoCost
-		if avgCost {
-			cost = s.AvgCost
-		}
-		fmt.Printf("%s: Sold %s of %s with P&L of $%s purchased on %s\n", s.SaleDate.Format("2006-01-02"), s.Quantity, s.Asset, s.Proceeds.Sub(cost), s.PurchaseDate.Format("2006-01-02"))
-	}
-
-	fmt.Println("\n" + account.Report())
-
 }
 
 // Transaction is a crypto transaction as reported by Coinbase
@@ -162,11 +89,19 @@ func (h *LotHistory) peek() *Lot {
 	return h.Lots[0]
 }
 
+func (h *LotHistory) tail() *Lot {
+	if len(h.Lots) == 0 {
+		return nil
+	}
+
+	return h.Lots[len(h.Lots)-1]
+}
+
 // Sell processes a transaction against this LotHistory, adding any
 // resulting Sale events to the sales channel
-func (h *LotHistory) Sell(t *Transaction, sales chan<- *Sale) error {
+func (h *LotHistory) Sell(quantity decimal.Decimal, spot decimal.Decimal, date time.Time, sales chan<- *Sale) error {
 	var cost decimal.Decimal
-	remaining := t.Quantity
+	remaining := quantity
 	for ok := true; ok; ok = remaining.GreaterThan(decimal.Zero) {
 		lot := h.peek()
 		if lot == nil {
@@ -190,12 +125,12 @@ func (h *LotHistory) Sell(t *Transaction, sales chan<- *Sale) error {
 		}
 
 		sale := &Sale{
-			Asset:        t.Asset,
+			Asset:        h.Asset,
 			AvgCost:      avgCost,
 			FifoCost:     cost,
-			Proceeds:     t.Quantity.Mul(t.Spot),
-			Quantity:     t.Quantity,
-			SaleDate:     t.Timestamp,
+			Proceeds:     quantity.Mul(spot),
+			Quantity:     quantity.Sub(remaining),
+			SaleDate:     date,
 			PurchaseDate: lot.PurchaseDate,
 		}
 		sales <- sale
@@ -217,7 +152,7 @@ func (h *LotHistory) Quantity() decimal.Decimal {
 func (h *LotHistory) TotalCost() decimal.Decimal {
 	totalCost := decimal.Zero
 	for _, l := range h.Lots {
-		totalCost = totalCost.Add(l.Spot)
+		totalCost = totalCost.Add(l.Spot.Mul(l.Quantity))
 	}
 	return totalCost
 }
@@ -279,75 +214,12 @@ func (a *Account) ProcessTransaction(t *Transaction, sales chan<- *Sale) error {
 		holding.Buy(lot)
 
 	case SELL:
-		err := holding.Sell(t, sales)
+		err := holding.Sell(t.Quantity, t.Spot, t.Timestamp, sales)
 		if err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-// ReadStandardFile reads a transaction history csv file exported from Coinbase for a standard account,
-// returning a slice of Transactions to be processed by an Account struct
-func ReadStandardFile(filename string) []*Transaction {
-	transactions := make([]*Transaction, 0)
-
-	file, err := os.Open(filename)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer file.Close()
-
-	skipper := bufio.NewReader(file)
-	newlineCt := 0
-	for ok := true; ok; ok = newlineCt < 7 {
-		rune, _, err := skipper.ReadRune()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		if rune == '\n' {
-			newlineCt++
-		}
-	}
-
-	r := csv.NewReader(skipper)
-	headerRecordFound := false
-	for {
-		record, err := r.Read()
-
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		log.Debug(record)
-		if headerRecordFound {
-
-			time, err := time.Parse("2006-01-02T15:04:05Z", record[0])
-			if err != nil {
-				log.Panicf("Invalid time %s", record[0])
-			}
-
-			transaction := &Transaction{
-				Timestamp: time,
-				Action:    TransactionTypeToAction[record[1]],
-				Asset:     record[2],
-				Quantity:  decimal.RequireFromString(record[3]),
-				Spot:      decimal.RequireFromString(record[4]),
-				Currency:  "USD",
-			}
-
-			transactions = append(transactions, transaction)
-
-		}
-
-		headerRecordFound = true
-	}
-
-	return transactions
 }
 
 // Report returns a string containing an account summary
