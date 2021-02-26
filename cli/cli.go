@@ -43,7 +43,11 @@ func main() {
 	}
 	filename := flag.Arg(0)
 
-	transactions := parser.ReadStandardFile(filename)
+	transactions, err := parser.ReadStandardFile(filename)
+	if err != nil {
+		log.Panic(err)
+	}
+
 	sort.Slice(transactions, func(i, j int) bool {
 		return transactions[i].Timestamp.Unix() < transactions[j].Timestamp.Unix()
 	})

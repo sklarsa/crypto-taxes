@@ -3,8 +3,10 @@ package parser
 import (
 	"bufio"
 	"encoding/csv"
+	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -12,14 +14,16 @@ import (
 	a "github.com/sklarsa/crypto-taxes/accounting"
 )
 
+var expectedHeaders = [9]string{"Timestamp", "Transaction Type", "Asset", "Quantity Transacted", "USD Spot Price at Transaction", "USD Subtotal", "USD Total (inclusive of fees)", "USD Fees", "Notes"}
+
 // ReadStandardFile reads a transaction history csv file exported from Coinbase for a standard account,
 // returning a slice of Transactions to be processed by an Account struct
-func ReadStandardFile(filename string) []*a.Transaction {
+func ReadStandardFile(filename string) ([]*a.Transaction, error) {
 	transactions := make([]*a.Transaction, 0)
 
 	file, err := os.Open(filename)
 	if err != nil {
-		log.Fatal(err)
+		return transactions, err
 	}
 	defer file.Close()
 
@@ -29,7 +33,7 @@ func ReadStandardFile(filename string) []*a.Transaction {
 	for ok := true; ok; ok = newlineCt < 7 {
 		rune, _, err := skipper.ReadRune()
 		if err != nil {
-			log.Fatal(err)
+			return transactions, err
 		}
 
 		if rune == '\n' {
@@ -46,7 +50,7 @@ func ReadStandardFile(filename string) []*a.Transaction {
 			break
 		}
 		if err != nil {
-			log.Fatal(err)
+			return transactions, err
 		}
 
 		log.Debug(record)
@@ -54,7 +58,7 @@ func ReadStandardFile(filename string) []*a.Transaction {
 
 			time, err := time.Parse("2006-01-02T15:04:05Z", record[0])
 			if err != nil {
-				log.Panicf("Invalid time %s", record[0])
+				return transactions, fmt.Errorf("Invalid time %s", record[0])
 			}
 
 			transaction := &a.Transaction{
@@ -68,10 +72,17 @@ func ReadStandardFile(filename string) []*a.Transaction {
 
 			transactions = append(transactions, transaction)
 
+		} else {
+			// Validate headers
+			for i := 0; i < len(expectedHeaders); i++ {
+				if strings.TrimSpace(record[i]) != expectedHeaders[i] {
+					return transactions, fmt.Errorf("Invalid heading in position %d: Found '%s' but expected '%s'", i+1, record[i], expectedHeaders[i])
+				}
+			}
 		}
 
 		headerRecordFound = true
 	}
 
-	return transactions
+	return transactions, nil
 }
