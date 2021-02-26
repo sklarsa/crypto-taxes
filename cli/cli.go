@@ -11,16 +11,6 @@ import (
 	"github.com/sklarsa/crypto-taxes/parser"
 )
 
-// Action is either a buy or sale of a crypto
-type Action int
-
-const (
-	// BUY is a purchase event of crypto
-	BUY Action = iota
-	// SELL is a crypto sale event, including conversion into a different asset or paying for an order
-	SELL Action = iota
-)
-
 func usage() {
 	fmt.Printf("Usage: %s [OPTIONS] filename.csv\n", os.Args[0])
 	flag.PrintDefaults()
@@ -37,6 +27,9 @@ func main() {
 
 	var avgCost bool
 	flag.BoolVar(&avgCost, "avg", false, "Average cost basis (FIFO is default)")
+
+	var csvOutput bool
+	flag.BoolVar(&csvOutput, "csv", false, "Output results in turbotax csv format")
 
 	flag.Parse()
 
@@ -71,18 +64,29 @@ func main() {
 
 	go func() {
 		for t := range badTransactions {
-			fmt.Printf("Error processing %s sale of %s %s\n", t.Timestamp.Format("2006-01-02"), t.Quantity, t.Asset)
+			os.Stderr.WriteString(
+				fmt.Sprintf("\033[0;31mError processing %s sale of %s %s\033[0m\n", t.Timestamp.Format("2006-01-02"), t.Quantity, t.Asset),
+			)
 		}
 	}()
 
+	if csvOutput {
+		fmt.Println("\"Currency Name\",\"Purchase Date\",\"Cost Basis\",\"Date Sold\",\"Proceeds\"")
+	}
 	for s := range sales {
 		cost := s.FifoCost
 		if avgCost {
 			cost = s.AvgCost
 		}
-		fmt.Printf("%s: Sold %s of %s with P&L of $%s purchased on %s\n", s.SaleDate.Format("2006-01-02"), s.Quantity, s.Asset, s.Proceeds.Sub(cost).Round(2), s.PurchaseDate.Format("2006-01-02"))
-	}
+		if csvOutput {
+			fmt.Printf("\"%s\",%s,%s,%s,%s,\n", s.Asset, s.PurchaseDate.Format("2006-01-02"), cost, s.SaleDate.Format("2006-01-02"), s.Proceeds)
+		} else {
+			fmt.Printf("%s: Sold %s of %s with P&L of $%s purchased on %s\n", s.SaleDate.Format("2006-01-02"), s.Quantity, s.Asset, s.Proceeds.Sub(cost).Round(2), s.PurchaseDate.Format("2006-01-02"))
+		}
 
-	fmt.Println("\n" + account.Report())
+	}
+	if !csvOutput {
+		fmt.Println("\n" + account.Report())
+	}
 
 }

@@ -5,5 +5,6 @@
 Parses coinbase csvs to calculate P&L on crypto transactions.
 
 Because coinbase's csv export is not compatible with Turbotax.  See:
+
 - [Coinbase CSV tax doesn’t work with Turbo Tax?](https://www.reddit.com/r/CoinBase/comments/kwbw3w/coinbase_csv_tax_doesnt_work_with_turbo_tax/)
 - [Coinbase csv file not compatible on turbotax? No Headers Found In This File error?](https://ttlc.intuit.com/community/taxes/discussion/coinbase-csv-file-not-compatible-on-turbotax-no-headers-found-in-this-file-error/00/1820285)
