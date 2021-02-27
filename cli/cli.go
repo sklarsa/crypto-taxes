@@ -83,7 +83,7 @@ func main() {
 			cost = s.AvgCost
 		}
 		if csvOutput {
-			fmt.Printf("\"%s\",%s,%s,%s,%s,\n", s.Asset, s.PurchaseDate.Format("2006-01-02"), cost, s.SaleDate.Format("2006-01-02"), s.Proceeds)
+			fmt.Printf("\"%s\",%s,%s,%s,%s\n", s.Asset, s.PurchaseDate.Format("2006-01-02"), cost, s.SaleDate.Format("2006-01-02"), s.Proceeds)
 		} else {
 			fmt.Printf("%s: Sold %s of %s with P&L of $%s purchased on %s\n", s.SaleDate.Format("2006-01-02"), s.Quantity, s.Asset, s.Proceeds.Sub(cost).Round(2), s.PurchaseDate.Format("2006-01-02"))
 		}

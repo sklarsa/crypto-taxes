@@ -79,9 +79,9 @@ func ReadStandardFile(filename string) ([]*a.Transaction, error) {
 					return transactions, fmt.Errorf("Invalid heading in position %d: Found '%s' but expected '%s'", i+1, record[i], expectedHeaders[i])
 				}
 			}
+			headerRecordFound = true
 		}
 
-		headerRecordFound = true
 	}
 
 	return transactions, nil
