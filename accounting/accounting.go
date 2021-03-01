@@ -141,16 +141,16 @@ func (h *LotHistory) Sell(quantity decimal.Decimal, spot decimal.Decimal, date t
 
 	var cost decimal.Decimal
 	remaining := quantity
+	var proceeds decimal.Decimal
 	for ok := true; ok; ok = remaining.GreaterThan(decimal.Zero) {
 		lot := h.peek()
 		if lot == nil {
 			return fmt.Errorf("No more lots available. Sold more shares than bought. %s shares remaining", remaining)
 		}
-		avgCost := h.AvgCost()
 		switch remaining.Cmp(lot.Quantity) {
 		case -1:
-			avgCost = avgCost.Mul(remaining)
 			cost = remaining.Mul(lot.Spot)
+			proceeds = remaining.Mul(spot)
 			lot.Quantity = lot.Quantity.Sub(remaining)
 			remaining = decimal.Zero
 		default:
@@ -159,15 +159,14 @@ func (h *LotHistory) Sell(quantity decimal.Decimal, spot decimal.Decimal, date t
 				return err
 			}
 			cost = lot.TotalCost()
-			avgCost = lot.Quantity.Mul(avgCost)
-			remaining = remaining.Sub(lot.TotalCost())
+			proceeds = lot.Quantity.Mul(spot)
+			remaining = remaining.Sub(lot.Quantity)
 		}
 
 		sale := &Sale{
 			Asset:        h.Asset,
-			AvgCost:      avgCost,
 			FifoCost:     cost,
-			Proceeds:     quantity.Mul(spot),
+			Proceeds:     proceeds,
 			Quantity:     quantity.Sub(remaining),
 			SaleDate:     date,
 			PurchaseDate: lot.PurchaseDate,
@@ -196,27 +195,12 @@ func (h *LotHistory) TotalCost() decimal.Decimal {
 	return totalCost
 }
 
-// AvgCost returns the average cost (in USD) of the shares in the LotHistory
-func (h *LotHistory) AvgCost() decimal.Decimal {
-	num := decimal.Zero
-	denom := decimal.Zero
-	for _, l := range h.Lots {
-		num = num.Add(l.Spot.Mul(l.Quantity))
-		denom = denom.Add(l.Quantity)
-	}
-	if denom == decimal.Zero {
-		return decimal.Zero
-	}
-	return num.Div(denom)
-}
-
 // Sale is a taxable sale event
 type Sale struct {
 	Asset        string
 	SaleDate     time.Time
 	PurchaseDate time.Time
 	Quantity     decimal.Decimal
-	AvgCost      decimal.Decimal
 	FifoCost     decimal.Decimal
 	Proceeds     decimal.Decimal
 }

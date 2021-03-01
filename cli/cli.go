@@ -25,9 +25,6 @@ func main() {
 	var verbose bool
 	flag.BoolVar(&verbose, "v", false, "Turns on debug logging")
 
-	var avgCost bool
-	flag.BoolVar(&avgCost, "avg", false, "Average cost basis (FIFO is default)")
-
 	var csvOutput bool
 	flag.BoolVar(&csvOutput, "csv", false, "Output results in turbotax csv format")
 
@@ -79,9 +76,6 @@ func main() {
 	}
 	for s := range sales {
 		cost := s.FifoCost
-		if avgCost {
-			cost = s.AvgCost
-		}
 		if csvOutput {
 			fmt.Printf("\"%s\",%s,%s,%s,%s\n", s.Asset, s.PurchaseDate.Format("2006-01-02"), cost, s.SaleDate.Format("2006-01-02"), s.Proceeds)
 		} else {
