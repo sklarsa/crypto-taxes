@@ -28,6 +28,9 @@ func main() {
 	var csvOutput bool
 	flag.BoolVar(&csvOutput, "csv", false, "Output results in turbotax csv format")
 
+	var year int
+	flag.IntVar(&year, "y", 0, "Only output sales for a specified year")
+
 	flag.Parse()
 
 	if flag.NArg() != 1 {
@@ -75,6 +78,11 @@ func main() {
 		fmt.Println("\"Currency Name\",\"Purchase Date\",\"Cost Basis\",\"Date Sold\",\"Proceeds\"")
 	}
 	for s := range sales {
+		// Skip transaction if year flag is set and transaction is not in the specified year
+		if year > 0 && s.SaleDate.Year() != year {
+			continue
+		}
+
 		cost := s.FifoCost
 		if csvOutput {
 			fmt.Printf("\"%s\",%s,%s,%s,%s\n", s.Asset, s.PurchaseDate.Format("2006-01-02"), cost, s.SaleDate.Format("2006-01-02"), s.Proceeds)
